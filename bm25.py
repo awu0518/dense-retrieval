@@ -84,7 +84,7 @@ def decode_num_from_file(f) -> int:
 
 
 # --- I/O readers ------------------------------------------------------------
-def read_page_table(path="pageTable") -> Dict[int, int]:
+def read_page_table(path="pageTable.txt") -> Dict[int, int]:
     page_table: Dict[int, int] = {}
     if not os.path.exists(path):
         print(f"[WARN] page table file not found: {path}", file=sys.stderr)
@@ -255,107 +255,6 @@ def bm25(L: InvertedList, doc_len: int) -> float:
     return math.log2((N - ft + 0.5) / (ft + 0.5)) * ((K1 + 1) * fdt) / denom
 
 
-# --- DAAT functions --------------------------------------------------------
-def conjunctive_daat(lists: List[Tuple[int, InvertedList]], page_table: Dict[int, int]):
-    print("Doing conjunctive DAAT")
-    if not lists:
-        return
-    base_list = lists[0][1]
-    heap: List[Tuple[float, int]] = []
-
-    curr_docid = 0
-    while True:
-        curr_docid = find_next_docid(base_list, curr_docid)
-        if curr_docid == N:
-            break
-        idx = 1
-        res = 0
-        for idx in range(1, len(lists)):
-            res = find_next_docid(lists[idx][1], curr_docid)
-            if res != curr_docid or res == N:
-                break
-        if res == N:
-            break
-
-        if idx + 1 == len(lists) and res == curr_docid:
-            impact_score = 0.0
-            missing = False
-            for _, curr_list in lists:
-                if curr_docid not in page_table:
-                    missing = True
-                    break
-                impact_score += bm25(curr_list, page_table[curr_docid])
-            if not missing:
-                if len(heap) < TOPK_HEAP_SIZE:
-                    heapq.heappush(heap, (impact_score, curr_docid))
-                else:
-                    if heap[0][0] < impact_score:
-                        heapq.heappushpop(heap, (impact_score, curr_docid))
-        curr_docid += 1
-
-    top_searches = []
-    while heap:
-        top_searches.append(heapq.heappop(heap))
-    top_searches.reverse()
-    for score, docid in top_searches:
-        print(f"Impact Score: {score} DocID: {docid}")
-
-
-def disjunctive_daat(lists: List[Tuple[int, InvertedList]], page_table: Dict[int, int]):
-    print("Doing disjunctive DAAT")
-    heap: List[Tuple[float, int]] = []
-    if not lists:
-        return
-    num_essential = max(int(len(lists) * 0.3), 1)
-    essential_docids: List[Tuple[int, float]] = []
-
-    for i in range(num_essential):
-        L = lists[i][1]
-        curr_docid = 0
-        for _ in range(L.numDocs):
-            curr_docid = find_next_docid(L, curr_docid)
-            if curr_docid == N:
-                break
-            if curr_docid not in page_table:
-                curr_docid += 1
-                continue
-            val = bm25(L, page_table[curr_docid])
-            essential_docids.append((curr_docid, val))
-            curr_docid += 1
-
-    essential_docids.sort(key=lambda x: x[0])
-    merged: List[Tuple[int, float]] = []
-    if essential_docids:
-        last_id, last_score = essential_docids[0]
-        for docid, sc in essential_docids[1:]:
-            if docid == last_id:
-                last_score += sc
-            else:
-                merged.append((last_id, last_score))
-                last_id, last_score = docid, sc
-        merged.append((last_id, last_score))
-
-    for docid, base_score in merged:
-        curr_impact = base_score
-        for j in range(num_essential, len(lists)):
-            L = lists[j][1]
-            if find_next_docid(L, docid) == docid:
-                if docid in page_table:
-                    curr_impact += bm25(L, page_table[docid])
-        if len(heap) < TOPK_HEAP_SIZE:
-            heapq.heappush(heap, (curr_impact, docid))
-        else:
-            if heap[0][0] < curr_impact:
-                heapq.heappushpop(heap, (curr_impact, docid))
-
-    top_searches = []
-    while heap:
-        top_searches.append(heapq.heappop(heap))
-    top_searches.reverse()
-    for score, docid in top_searches:
-        print(f"Impact Score: {score} DocID: {docid}")
-
-
 # --- tokenization ----------------------------------------------------------
 STOP_WORDS = {"the"}
 
@@ -393,7 +292,7 @@ def main():
         print("cant open index", file=sys.stderr)
         sys.exit(1)
 
-    page_table = read_page_table("pageTable")
+    page_table = read_page_table("pageTable.txt")
     lexicon = read_lexicon("lexicon.txt")
 
     with open(index_path, "rb") as index_file:
@@ -421,13 +320,6 @@ def main():
 
             lists.sort(key=lambda x: x[0])
 
-            start = time.time()
-            if mode == 0:
-                conjunctive_daat(lists, page_table)
-            else:
-                disjunctive_daat(lists, page_table)
-            end = time.time()
-            print(f"\n[INFO] DAAT function took {int((end - start) * 1000)} ms")
 
     print("Exiting.")
 
