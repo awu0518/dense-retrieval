@@ -1,3 +1,7 @@
 ms_marco/
 *txt
 __pycache__/
+buildNewIndex/*.exe
+buildNewIndex/mergedPreIndex
+buildNewIndex/tempFiles/
+buildNewIndex/tempFilesMerged/
