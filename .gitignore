@@ -1,7 +1,8 @@
 ms_marco/
+queries/
 *txt
 __pycache__/
-buildNewIndex/*.exe
-buildNewIndex/mergedPreIndex
-buildNewIndex/tempFiles/
-buildNewIndex/tempFilesMerged/
+buildBM25Index/*.exe
+buildBM25Index/mergedPreIndex
+buildBM25Index/tempFiles/
+buildBM25Index/tempFilesMerged/
