@@ -68,10 +68,14 @@ void tokenizeString(const std::string& line, std::vector<std::string>& tokens);
 double bm25(InvertedList* currList, uint16_t docLen);
 uint32_t findNextDocID(InvertedList* currList, uint32_t target);
 InvertedList* openInvertedList(LexiconInvertedList*, std::ifstream&);
-void conjunctiveDAAT(std::vector<std::pair<uint32_t, InvertedList*>>& lists, 
-    const std::unordered_map<uint32_t, uint16_t>& pageTable);
-void disjunctiveDAAT(std::vector<std::pair<uint32_t, InvertedList*>>& lists, 
-    const std::unordered_map<uint32_t, uint16_t>& pageTable);
+std::vector<std::pair<double, uint32_t>> disjunctiveDAAT(std::vector<std::pair<uint32_t, InvertedList*>>& lists, 
+    const std::unordered_map<uint32_t, uint16_t>& pageTable, size_t topK);
+void readQuery(const std::string& path, std::unordered_map<uint32_t, std::string>& queries);
+void readEval(bool isDev, const std::string& path, const std::string& outPath,
+                const std::unordered_map<uint32_t, std::string>& queries,
+                const std::unordered_map<std::string, LexiconInvertedList*>& lexicon,
+                const std::unordered_map<uint32_t, uint16_t>& pageTable,
+                std::ifstream& index);
 
 int main() {
     std::ifstream index("index.txt", std::ios::binary);
@@ -80,41 +84,18 @@ int main() {
     readPageTable(pageTable);
     std::unordered_map<std::string, LexiconInvertedList*> lexicon;
     readLexicon(lexicon);
-    std::string query; bool mode; std::vector<std::string> tokens;
 
-    while (true) {
-        std::cout << "Enter query: ";
-        std::getline(std::cin, query);
-        std::cout << "Enter 0 for conjunctive and 1 for disjunctive: ";
-        std::cin >> mode;
-        std::cin.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
-        
-        tokenizeString(query, tokens);
-        std::vector<std::pair<uint32_t, InvertedList*>> lists;
+    std::unordered_map<uint32_t, std::string> queries;
+    readQuery("../queries/queries.eval.tsv", queries);
 
-        for (const std::string& token : tokens) { 
-            auto it = lexicon.find(token);
-            if (it == lexicon.end()) {
-                std::cerr << "[WARN] docID " << token << " missing from lexicon\n";
-                continue;
-            }
-            InvertedList* currList = openInvertedList(lexicon[token], index);
-            lists.push_back(std::pair<uint32_t, InvertedList*>(currList->numDocs, currList));
-        }
+    readEval(false, "../ms_marco/qrels.eval.one.tsv", "bm25.eval.one.tsv", queries, lexicon, pageTable, index);
+    readEval(false, "../ms_marco/qrels.eval.two.tsv", "bm25.eval.two.tsv", queries, lexicon, pageTable, index);
 
-        std::sort(lists.begin(), lists.end());
+    queries.clear();
+    readQuery("../queries/queries.dev.tsv", queries);
 
-        if (!mode) { conjunctiveDAAT(lists, pageTable); }
-        else { disjunctiveDAAT(lists, pageTable); }
+    readEval(true, "../ms_marco/qrels.dev.tsv", "bm25.dev.tsv", queries, lexicon, pageTable, index);
 
-        for (size_t i = 0; i < lists.size(); i++) {
-            InvertedList* currList = lists[i].second;
-            for (Chunk* chunk : currList->compressedChunks) {
-                delete chunk;
-            }
-            delete currList;
-        }
-    }
     return 0;
 }
 
@@ -261,6 +242,7 @@ void tokenizeString(const std::string& line, std::vector<std::string>& tokens) {
     }
 
     // Remove duplicates
+    std::sort(tokens.begin(), tokens.end());
     tokens.erase(std::unique(tokens.begin(), tokens.end()), tokens.end());
 }
 
@@ -367,6 +349,7 @@ InvertedList* openInvertedList(LexiconInvertedList* lexiconMetadata, std::ifstre
     currList->elemsInLastChunk = lexiconMetadata->elemsLastChunk;
     currList->numDocs = totalPostings(lexiconMetadata);
 
+    index.clear();
     index.seekg(static_cast<std::streamoff>(lexiconMetadata->startByte), std::ios::beg); // go to beginning of inverted list in index file
     for (uint32_t i=0;i<lexiconMetadata->docIdBytes.size();i++){
         Chunk* chunk = new Chunk{};
@@ -389,71 +372,9 @@ InvertedList* openInvertedList(LexiconInvertedList* lexiconMetadata, std::ifstre
     return currList;
 }
 
-/*
-Computes top 10 queries using conjunctiveDAAT processing
-*/
-void conjunctiveDAAT(std::vector<std::pair<uint32_t, InvertedList*>>& lists, 
-    const std::unordered_map<uint32_t, uint16_t>& pageTable) {
+std::vector<std::pair<double, uint32_t>> disjunctiveDAAT(std::vector<std::pair<uint32_t, InvertedList*>>& lists, 
+    const std::unordered_map<uint32_t, uint16_t>& pageTable, size_t topK) {
 
-    std::cout << "Doing conjunctive DAAT" << std::endl;
-    InvertedList* baseList = lists[0].second; // obtain the smallest list to loop over
-    std::cout << "Base List contains " << baseList->numDocs << " documents.\n";
-    std::priority_queue<std::pair<double, uint32_t>, std::vector<std::pair<double, uint32_t>>, Compare> heap;
-
-    uint32_t currDocId = 0;
-    while ((currDocId = findNextDocID(baseList, currDocId)) != N) {
-        size_t index = 1;
-        uint32_t res = 0;
-        for (; index < lists.size(); index++) { // attempt to find docID in all remaining lists
-            res = findNextDocID(lists[index].second, currDocId);
-            if (res != currDocId || res == N ) { break; }
-        }
-        if (res == N) break; // if a list returns N, there is nothing else to process
-        
-        bool missing = false;
-        if (index == lists.size()) { // calculate impact score for all lists
-            double impactScore = 0;
-            for (size_t j = 0; j < lists.size(); j++) {
-                    InvertedList* currList = lists[j].second;
-                    auto it = pageTable.find(currDocId);
-                    if (it == pageTable.end()) {
-                        std::cerr << "[WARN] docID " << currDocId << " missing from pageTable\n";
-                        missing = true;
-                        break;
-                    }
-                    impactScore += bm25(currList, it->second);
-            }
-
-            if (!missing) { // add to heap if possible, instant add if less than 10 and replacing smallest elem if at 10 elements
-                if (heap.size() != 10) { heap.push(std::pair<double, uint32_t>(impactScore, currDocId)); }
-                else if (heap.top().first < impactScore) {
-                    heap.pop();
-                    heap.push(std::pair<double, uint32_t>(impactScore, currDocId));  
-                }
-            }
-        }
-
-        currDocId++;
-    }
-
-    std::vector<std::pair<double, uint32_t>> topSearches;
-    while (!heap.empty()) {
-        topSearches.push_back(heap.top());
-        heap.pop();
-    }
-    
-    for (size_t i = topSearches.size(); i > 0; i--) {
-        std::cout << "Impact Score: " << topSearches[i-1].first << " DocID: " << topSearches[i-1].second << std::endl;
-    }
-}
-
-/*
-Computes top 10 queries using disjunctiveDAAT processing
-*/
-void disjunctiveDAAT(std::vector<std::pair<uint32_t, InvertedList*>>& lists, 
-    const std::unordered_map<uint32_t, uint16_t>& pageTable) {
-
-    std::cout << "Doing disjunctive DAAT" << std::endl;
     std::priority_queue<std::pair<double, uint32_t>, std::vector<std::pair<double, uint32_t>>, Compare> heap;
 
     const size_t numEssential = std::max<size_t>(size_t(lists.size() * 0.3), 1); // choose lower third of all lists to be essential
@@ -465,7 +386,10 @@ void disjunctiveDAAT(std::vector<std::pair<uint32_t, InvertedList*>>& lists,
         for (size_t currDocIndex = 0; currDocIndex < currList->numDocs; currDocIndex++) {
             currDocId = findNextDocID(currList, currDocId);
             if (currDocId == N) break;
-            essentialDocIds.push_back(std::pair<uint32_t, double>(currDocId, bm25(currList, pageTable.at(currDocId))));
+            auto it = pageTable.find(currDocId);
+            if (it != pageTable.end()) {
+                essentialDocIds.push_back(std::pair<uint32_t, double>(currDocId, bm25(currList, pageTable.at(currDocId))));
+            }
             currDocId++;
             
         }
@@ -496,7 +420,7 @@ void disjunctiveDAAT(std::vector<std::pair<uint32_t, InvertedList*>>& lists,
         }
 
         // add to heap if possible, instant add if less than 10 and replacing smallest elem if at 10 elements
-        if (heap.size() != 10) { heap.push(std::pair<double, uint32_t>(currImpact, currDocId)); }
+        if (heap.size() != topK) { heap.push(std::pair<double, uint32_t>(currImpact, currDocId)); }
         else {
             std::pair<double, uint32_t> minImpact = heap.top();
             if (minImpact.first < currImpact) {
@@ -511,8 +435,95 @@ void disjunctiveDAAT(std::vector<std::pair<uint32_t, InvertedList*>>& lists,
         topSearches.push_back(heap.top());
         heap.pop();
     }
+    std::reverse(topSearches.begin(), topSearches.end());
+    return topSearches;
+}
+
+void readQuery(const std::string& path, std::unordered_map<uint32_t, std::string>& queries) {
+    std::ifstream queryStream(path);
+    if (!queryStream) { std::cerr << "Failed to open query\n" << std::endl; exit(1); }
+
+    std::string line;
+    while (std::getline(queryStream, line)) {
+        if (line.empty()) continue;
+        size_t tab = line.find('\t');
+        if (tab == std::string::npos) continue;
+        uint32_t qid = static_cast<uint32_t>(std::stoul(line.substr(0, tab)));
+        std::string qtext = line.substr(tab + 1);
+        queries.insert({qid, qtext});
+    }
+}
+
+void readEval(bool isDev, const std::string& path, const std::string& outPath,
+                const std::unordered_map<uint32_t, std::string>& queries,
+                const std::unordered_map<std::string, LexiconInvertedList*>& lexicon,
+                const std::unordered_map<uint32_t, uint16_t>& pageTable,
+                std::ifstream& index) {
+    std::ifstream evalStream(path);
+    std::ofstream out(outPath);
+    if (!evalStream || !out) { std::cerr << "Failed to open eval or out\n" << std::endl; exit(1); }
+
+    std::string line;
+    std::vector<std::string> tokens;
+
+    std::unordered_set<uint32_t> qids;
+    while (std::getline(evalStream, line)) {
+        if (line.empty()) continue;
+        std::istringstream ss(line);
+        uint32_t qid, docid; uint8_t ignore; int rel;
+        if (isDev) {
+            // MSMARCO dev: qid docid rel
+            if (!(ss >> qid >> docid >> rel)) continue;
+        } else {
+            // TREC: qid 0 docid rel
+            if (!(ss >> qid >> ignore >> docid >> rel)) continue;
+        }
+        qids.insert(qid);
+    }
     
-    for (size_t i = topSearches.size(); i > 0; i--) {
-        std::cout << "Impact Score: " << topSearches[i-1].first << " DocID: " << topSearches[i-1].second << std::endl;
+    size_t topK = 1000;
+
+    size_t missing_queries = 0;
+    for (uint32_t qid : qids) {
+        auto qit = queries.find(qid);
+        if (qit == queries.end()) {
+            // no query text available for this qid; skip
+            ++missing_queries;
+            continue;
+        }
+
+        tokenizeString(qit->second, tokens);
+        if (tokens.empty()) continue;
+
+        std::vector<std::pair<uint32_t, InvertedList*>> lists;
+        lists.reserve(tokens.size());
+
+        for (const std::string& token : tokens) {
+            auto lt = lexicon.find(token);
+            if (lt == lexicon.end()) continue;
+            InvertedList* L = openInvertedList(lt->second, index);
+            if (!L || L->numDocs == 0) { if (L) { for (auto* c : L->compressedChunks) delete c; delete L; } continue; }
+            lists.emplace_back(L->numDocs, L);
+        }
+
+        if (lists.empty()) {
+            // nothing to retrieve for this qid; continue
+            continue;
+        }
+
+        std::sort(lists.begin(), lists.end());
+        auto results = disjunctiveDAAT(lists, pageTable, topK);
+
+        int rank = 1;
+        for (const auto& [score, docid] : results) {
+            out << qid << " Q0 " << docid << " " << rank++ << " " << score << " BM25\n";
+        }
+
+        // free lists
+        for (auto& p : lists) {
+            InvertedList* currList = p.second;
+            for (Chunk* chunk : currList->compressedChunks) delete chunk;
+            delete currList;
+        }
     }
 }
