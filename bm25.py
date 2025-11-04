@@ -83,7 +83,6 @@ def decode_num_from_file(f) -> int:
     return num
 
 
-# --- I/O readers ------------------------------------------------------------
 def read_page_table(path="pageTable.txt") -> Dict[int, int]:
     page_table: Dict[int, int] = {}
     if not os.path.exists(path):
@@ -142,7 +141,6 @@ def read_lexicon(path="lexicon.txt") -> Dict[str, LexiconInvertedList]:
     return lexicon
 
 
-# --- utility functions replicated from C++ ---------------------------------
 def elems_in_chunk(lex: LexiconInvertedList, i: int) -> int:
     if i == 0:
         return lex.elemsFirstChunk
@@ -319,7 +317,7 @@ def main():
                 lists.append((curr_list.numDocs, curr_list))
 
             lists.sort(key=lambda x: x[0])
-
+            print(lists[:10])
 
     print("Exiting.")
 
