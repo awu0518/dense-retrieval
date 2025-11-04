@@ -70,6 +70,8 @@ uint32_t findNextDocID(InvertedList* currList, uint32_t target);
 InvertedList* openInvertedList(LexiconInvertedList*, std::ifstream&);
 std::vector<std::pair<double, uint32_t>> disjunctiveDAAT(std::vector<std::pair<uint32_t, InvertedList*>>& lists, 
     const std::unordered_map<uint32_t, uint16_t>& pageTable, size_t topK);
+std::vector<std::pair<double, uint32_t>> disjunctiveDAAT2(std::vector<std::pair<uint32_t, InvertedList*>>& lists, 
+    const std::unordered_map<uint32_t, uint16_t>& pageTable, size_t topK);
 void readQuery(const std::string& path, std::unordered_map<uint32_t, std::string>& queries);
 void readEval(bool isDev, const std::string& path, const std::string& outPath,
                 const std::unordered_map<uint32_t, std::string>& queries,
@@ -222,6 +224,8 @@ void tokenizeString(const std::string& line, std::vector<std::string>& tokens) {
         "what", "which", "who", "when", "where", "why", "how"
     };
 
+    // static const std::unordered_set<std::string> stopWords = { "the" };
+
     tokens.clear();
     std::string tempString;
     
@@ -241,9 +245,9 @@ void tokenizeString(const std::string& line, std::vector<std::string>& tokens) {
         tokens.push_back(tempString);
     }
 
-    // Remove duplicates
-    std::sort(tokens.begin(), tokens.end());
-    tokens.erase(std::unique(tokens.begin(), tokens.end()), tokens.end());
+    // // Remove duplicates
+    // std::sort(tokens.begin(), tokens.end());
+    // tokens.erase(std::unique(tokens.begin(), tokens.end()), tokens.end());
 }
 
 /*
@@ -439,6 +443,63 @@ std::vector<std::pair<double, uint32_t>> disjunctiveDAAT(std::vector<std::pair<u
     return topSearches;
 }
 
+std::vector<std::pair<double, uint32_t>> disjunctiveDAAT2(std::vector<std::pair<uint32_t, InvertedList*>>& lists, 
+    const std::unordered_map<uint32_t, uint16_t>& pageTable, size_t topK) {
+
+    std::priority_queue<std::pair<double, uint32_t>, std::vector<std::pair<double, uint32_t>>, Compare> heap;
+
+    std::vector<std::pair<uint32_t, double>> docIDs;
+    for (size_t i = 0; i < lists.size(); i++) { // add all docIDs for those lists into one vector, along with each impact score
+        InvertedList* currList = lists[i].second;
+        uint32_t currDocId = 0;
+        for (size_t currDocIndex = 0; currDocIndex < currList->numDocs; currDocIndex++) {
+            currDocId = findNextDocID(currList, currDocId);
+            if (currDocId == N) break;
+            auto it = pageTable.find(currDocId);
+            if (it != pageTable.end()) {
+                docIDs.push_back(std::pair<uint32_t, double>(currDocId, bm25(currList, pageTable.at(currDocId))));
+            }
+            currDocId++;
+            
+        }
+    }
+
+    std::sort(docIDs.begin(), docIDs.end());
+    std::vector<std::pair<uint32_t, double>> noDups;
+    if (!docIDs.empty()) {
+        uint32_t cur = docIDs[0].first;
+        double acc = docIDs[0].second;
+        for (size_t i = 1; i < docIDs.size(); ++i) {
+            if (docIDs[i].first == cur) acc += docIDs[i].second;
+            else { noDups.emplace_back(cur, acc); cur = docIDs[i].first; acc = docIDs[i].second; }
+        }
+        noDups.emplace_back(cur, acc);
+    }
+
+    for (const std::pair<uint32_t, double>& curr : noDups) {
+        uint32_t currDocId = curr.first;
+        double currImpact = curr.second;
+
+        // add to heap if possible, instant add if less than 10 and replacing smallest elem if at 10 elements
+        if (heap.size() != topK) { heap.push(std::pair<double, uint32_t>(currImpact, currDocId)); }
+        else {
+            std::pair<double, uint32_t> minImpact = heap.top();
+            if (minImpact.first < currImpact) {
+                heap.pop();
+                heap.push(std::pair<double, uint32_t>(currImpact, currDocId)); 
+            }
+        }
+    }
+
+    std::vector<std::pair<double, uint32_t>> topSearches;
+    while (!heap.empty()) {
+        topSearches.push_back(heap.top());
+        heap.pop();
+    }
+    std::reverse(topSearches.begin(), topSearches.end());
+    return topSearches;
+}
+
 void readQuery(const std::string& path, std::unordered_map<uint32_t, std::string>& queries) {
     std::ifstream queryStream(path);
     if (!queryStream) { std::cerr << "Failed to open query\n" << std::endl; exit(1); }
@@ -512,7 +573,7 @@ void readEval(bool isDev, const std::string& path, const std::string& outPath,
         }
 
         std::sort(lists.begin(), lists.end());
-        auto results = disjunctiveDAAT(lists, pageTable, topK);
+        auto results = disjunctiveDAAT2(lists, pageTable, topK);
 
         int rank = 1;
         for (const auto& [score, docid] : results) {
