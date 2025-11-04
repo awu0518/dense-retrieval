@@ -1,6 +1,6 @@
 # Implementation of query search using hsnw. The dataset setup is based off of this: https://github.com/facebookresearch/faiss/wiki/Faster-search
 # conda install -c pytorch faiss-cpu
-# pip install h5py 
+# pip install h5py pytrec_eval
 # 350 The melting point of a substance is the temperature at which it changes from. a solid to a liquid.
 # #  a liquid to a solid. a gas to a solid. a solid to a gas. The boiling point of a substance is the temperature at which it changes from. 
 # a liquid to a gas. a liquid to a solid. a gas to a solid. a solid to a liquid. When a gas is compressed it changes state into a. liquid.
@@ -20,9 +20,8 @@ def build_hnsw_ip(X, M=8, efC=100, efS=100):
     index.add(X)  # X must be float32
     return index
 
-def search_hnsw(index, Q, topk=1000, efS=None):
-    if efS is not None: index.hnsw.efSearch = efS
-    scores, I = index.search(Q.astype('float32'), topk)  # dot-product scores
+def search_hnsw(index, q_embeddings, topk=1000):
+    scores, I = index.search(q_embeddings.astype('float32'), topk)  # dot-product scores
     return I, scores
 
 
@@ -75,7 +74,7 @@ def get_relevance_label(qrels_dict, query_id, doc_id):
     else:
         return 0, False
     
-def format_run(qids, docids, inds, scores, topk=1000):
+def format_run(qids, dids, inds, scores, topk=1000):
     """
     The response from the  
         dict[str, dict[str, int]] in the format:
@@ -86,9 +85,9 @@ def format_run(qids, docids, inds, scores, topk=1000):
         qid = str(int(qid)) if not isinstance(qid, str) else qid
         run[qid] = {}
         for rank in range(topk):
-            doc_idx =  [i, rank]
+            doc_ind = inds[i, rank]
             score = float(scores[i, rank])
-            run[qid][str(int(docids[doc_idx]))] = score
+            run[qid][str(int(dids[doc_ind]))] = score
     return run
 
 dids, doc_embeddings = load_h5_embeddings(r"ms_marco\msmarco_passages_embeddings_subset.h5")
@@ -101,25 +100,22 @@ index = build_hnsw_ip(doc_embeddings)
 
 inds, scores = search_hnsw(index, q_embeddings, TOPK)
 
-
-
-docIDS = []
- 
-for i in range(TOPK):
-    docIDS.append(dids[inds[i]])
-
-# print(docIDS)
 qrels = {}
-qrels1 = load_qrels("ms_marco/qrels.dev.tsv")
+qrels = load_qrels("ms_marco/qrels.eval.one.tsv")
 # qrels2 = load_qrels("ms_marco/qrels.eval.two.tsv")
 # qdev = load_qrels("ms_marco/qrels.dev.tsv")
-evaluator = pytrec_eval.RelevanceEvaluator(qrels, {'map', 'ndcg_cut.10'})  
-print(len(inds))
+evaluator = pytrec_eval.RelevanceEvaluator(qrels, {'ndcg_cut.10'})  
+print(len(qrels))
 run = format_run(qid, dids, inds, scores, TOPK)
 results = evaluator.evaluate(run)
 print(len(results.items()))
 for query_id, metrics in results.items():
     print(f"{query_id}: {metrics}")
+
+ndcg_scores = [metrics['ndcg_cut_10'] for metrics in results.values()]
+
+
+print(np.mean(ndcg_scores))
 ##
 # After a search, i have the docids and the docid score for each query. \
 # i need a dict of that queryid mapped to the docid and relavacne score from the files
