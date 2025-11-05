@@ -542,7 +542,7 @@ void readEval(bool isDev, const std::string& path, const std::string& outPath,
         qids.insert(qid);
     }
     
-    size_t topK = 1000;
+    size_t topK = 100;
 
     size_t missing_queries = 0;
     for (uint32_t qid : qids) {
