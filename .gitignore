@@ -8,3 +8,4 @@ buildBM25Index/*.tsv
 buildBM25Index/mergedPreIndex
 buildBM25Index/tempFiles/
 buildBM25Index/tempFilesMerged/
+rerank/*.tsv
