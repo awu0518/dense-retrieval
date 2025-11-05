@@ -25,20 +25,28 @@ def search_hnsw(index, q_embeddings, topk=1000):
     return I, scores
 
 
+import pandas as pd
+
 def load_qrels(qrels_path):
     """
-    Loads a TREC-style qrels file:
-        <query_id> <unused> <doc_id> <relevance>
+    Loads a TREC-style or simplified TSV qrels file.
+    Supports formats:
+        1) <query_id> <unused> <doc_id> <relevance>
+        2) <query_id> <doc_id> <relevance>
     Returns:
         dict[str, dict[str, int]] in the format:
         { "qid": { "docid": relevance, ... }, ... }
     """
-    df = pd.read_csv(
-        qrels_path,
-        sep=r'\s+',  # handles both tabs and spaces
-        header=None,
-        names=['qid', 'unused', 'docid', 'label']
-    )
+    # Read file (handles both space/tab separators)
+    df = pd.read_csv(qrels_path, sep=r'\s+|\t+', header=None, engine='python')
+
+    # Detect number of columns
+    if len(df.columns) == 4:
+        df.columns = ['qid', 'unused', 'docid', 'label']
+    elif len(df.columns) == 3:
+        df.columns = ['qid', 'docid', 'label']
+    else:
+        raise ValueError(f"Unexpected number of columns ({len(df.columns)}) in {qrels_path}")
 
     qrels = {}
     for qid, docid, label in zip(df.qid, df.docid, df.label):
@@ -46,8 +54,9 @@ def load_qrels(qrels_path):
         if qid not in qrels:
             qrels[qid] = {}
         qrels[qid][docid] = int(label)
-    
+
     return qrels
+
 
 def get_relevance_label(qrels_dict, query_id, doc_id):
     """
@@ -100,23 +109,25 @@ index = build_hnsw_ip(doc_embeddings)
 
 inds, scores = search_hnsw(index, q_embeddings, TOPK)
 
-qrels = {}
-qrels = load_qrels("ms_marco/qrels.eval.one.tsv")
-# qrels2 = load_qrels("ms_marco/qrels.eval.two.tsv")
-# qdev = load_qrels("ms_marco/qrels.dev.tsv")
-evaluator = pytrec_eval.RelevanceEvaluator(qrels, {'ndcg_cut.10'})  
-print(len(qrels))
-run = format_run(qid, dids, inds, scores, TOPK)
-results = evaluator.evaluate(run)
-print(len(results.items()))
-for query_id, metrics in results.items():
-    print(f"{query_id}: {metrics}")
+eval_files = ["ms_marco/qrels.eval.one.tsv", "ms_marco/qrels.eval.two.tsv","ms_marco/qrels.dev.tsv"]
+for fname in eval_files:
+    qrels = {}
+    qrels = load_qrels(fname)
+    # qrels2 = load_qrels("ms_marco/qrels.eval.two.tsv")
+    # qdev = load_qrels("ms_marco/qrels.dev.tsv")
+    evaluator = pytrec_eval.RelevanceEvaluator(qrels, {'map', 'ndcg_cut.10', 'ndcg_cut.100', 'recip_rank', 'recall_100'})  
+    print(len(qrels))
+    run = format_run(qid, dids, inds, scores, TOPK)
+    results = evaluator.evaluate(run)
+    print(len(results.items()))
+    for key in results.values():
+        scores = results[key]
+        avg_score = np.mean(scores)
+        print(f"{key}: {avg_score}")
+    # ndcg_scores = [metrics['ndcg_cut_10'] for metrics in results.values()]
 
-ndcg_scores = [metrics['ndcg_cut_10'] for metrics in results.values()]
 
-
-print(np.mean(ndcg_scores))
-##
-# After a search, i have the docids and the docid score for each query. \
+    ##
+# After a search, i have the docids and the docid score for each query. 
 # i need a dict of that queryid mapped to the docid and relavacne score from the files
 # i need a dict of the queryid mapped to the docid and the score calculated by distance 
