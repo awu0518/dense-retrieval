@@ -9,7 +9,13 @@ import numpy as np
 import faiss
 import pandas as pd
 import pytrec_eval
+import time
+
 TOPK = 100
+M = 4
+EFS = 150
+EFC = 150
+
 
 def build_hnsw_ip(X, M=8, efC=100, efS=100):
     d = X.shape[1]
@@ -104,30 +110,26 @@ qid, q_embeddings = load_h5_embeddings(r"ms_marco\msmarco_queries_dev_eval_embed
 doc_embeddings = np.array(doc_embeddings).astype("float32") # because of how faiss works
 q_embeddings = np.array(q_embeddings).astype("float32") # because of how faiss works
 
-
+start_build = time.time()
 index = build_hnsw_ip(doc_embeddings)
-
+end_build = time.time()
+print(f"Index built in {end_build - start_build:.2f} seconds\n")
+start_build = time.time()
 inds, scores = search_hnsw(index, q_embeddings, TOPK)
-
+end_build = time.time()
+print(f"Index search in {end_build - start_build:.2f} seconds\n")
 eval_files = ["ms_marco/qrels.eval.one.tsv", "ms_marco/qrels.eval.two.tsv","ms_marco/qrels.dev.tsv"]
 for fname in eval_files:
     qrels = {}
     qrels = load_qrels(fname)
-    # qrels2 = load_qrels("ms_marco/qrels.eval.two.tsv")
-    # qdev = load_qrels("ms_marco/qrels.dev.tsv")
     evaluator = pytrec_eval.RelevanceEvaluator(qrels, {'map', 'ndcg_cut.10', 'ndcg_cut.100', 'recip_rank', 'recall_100'})  
-    print(len(qrels))
     run = format_run(qid, dids, inds, scores, TOPK)
     results = evaluator.evaluate(run)
-    print(len(results.items()))
-    for key in results.values():
-        scores = results[key]
-        avg_score = np.mean(scores)
-        print(f"{key}: {avg_score}")
-    # ndcg_scores = [metrics['ndcg_cut_10'] for metrics in results.values()]
-
-
-    ##
-# After a search, i have the docids and the docid score for each query. 
-# i need a dict of that queryid mapped to the docid and relavacne score from the files
-# i need a dict of the queryid mapped to the docid and the score calculated by distance 
+    metrics = {m: [] for m in ['map', 'ndcg_cut_10', 'ndcg_cut_100', 'recip_rank', 'recall_100']}
+    for query_metrics in results.values():
+        for m in metrics:
+            if m in query_metrics:
+                metrics[m].append(query_metrics[m])
+    for m, vals in metrics.items():
+        avg = np.mean(vals) if vals else 0
+        print(f"{m}: {avg}")
