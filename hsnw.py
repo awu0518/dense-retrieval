@@ -1,9 +1,13 @@
 # Implementation of query search using hsnw. The dataset setup is based off of this: https://github.com/facebookresearch/faiss/wiki/Faster-search
 # conda install -c pytorch faiss-cpu
 # pip install h5py pytrec_eval
-# 350 The melting point of a substance is the temperature at which it changes from. a solid to a liquid.
-# #  a liquid to a solid. a gas to a solid. a solid to a gas. The boiling point of a substance is the temperature at which it changes from. 
-# a liquid to a gas. a liquid to a solid. a gas to a solid. a solid to a liquid. When a gas is compressed it changes state into a. liquid.
+# run awk '{print $1 "\t0\t" $2 "\t" $3}' qrels.dev.tsv > qrels.dev.clean.tsv to get the file in the right format for trec_eval
+
+# 786436	0	8597447	0.7097718715667725
+# 786436	0	6032770	0.6237262487411499
+# 786436	0	8197603	0.6012924313545227
+# 786436	0	7654539	0.5569262504577637
+# 786436	0	3371951	0.5499846339225769
 from read_h5 import load_h5_embeddings
 import numpy as np
 import faiss
@@ -12,9 +16,9 @@ import pytrec_eval
 import time
 
 TOPK = 100
-M = 4
+M = 6
+EFC = 200
 EFS = 150
-EFC = 150
 
 
 def build_hnsw_ip(X, M=8, efC=100, efS=100):
@@ -22,8 +26,7 @@ def build_hnsw_ip(X, M=8, efC=100, efS=100):
     index = faiss.IndexHNSWFlat(d, M, faiss.METRIC_INNER_PRODUCT)
     index.hnsw.efConstruction = efC
     index.hnsw.efSearch = efS
-    # Optional: train() not required for HNSWFlat
-    index.add(X)  # X must be float32
+    index.add(X) 
     return index
 
 def search_hnsw(index, q_embeddings, topk=1000):
@@ -46,7 +49,7 @@ def load_qrels(qrels_path):
     # Read file (handles both space/tab separators)
     df = pd.read_csv(qrels_path, sep=r'\s+|\t+', header=None, engine='python')
 
-    # Detect number of columns
+    # number of columns
     if len(df.columns) == 4:
         df.columns = ['qid', 'unused', 'docid', 'label']
     elif len(df.columns) == 3:
@@ -110,22 +113,18 @@ qid, q_embeddings = load_h5_embeddings(r"ms_marco\msmarco_queries_dev_eval_embed
 doc_embeddings = np.array(doc_embeddings).astype("float32") # because of how faiss works
 q_embeddings = np.array(q_embeddings).astype("float32") # because of how faiss works
 
-start_build = time.time()
-index = build_hnsw_ip(doc_embeddings)
-end_build = time.time()
-print(f"Index built in {end_build - start_build:.2f} seconds\n")
-start_build = time.time()
+index = build_hnsw_ip(doc_embeddings, M=M, efC=EFC, efS=EFS)
 inds, scores = search_hnsw(index, q_embeddings, TOPK)
-end_build = time.time()
-print(f"Index search in {end_build - start_build:.2f} seconds\n")
 eval_files = ["ms_marco/qrels.eval.one.tsv", "ms_marco/qrels.eval.two.tsv","ms_marco/qrels.dev.tsv"]
 for fname in eval_files:
     qrels = {}
     qrels = load_qrels(fname)
-    evaluator = pytrec_eval.RelevanceEvaluator(qrels, {'map', 'ndcg_cut.10', 'ndcg_cut.100', 'recip_rank', 'recall_100'})  
-    run = format_run(qid, dids, inds, scores, TOPK)
-    results = evaluator.evaluate(run)
-    metrics = {m: [] for m in ['map', 'ndcg_cut_10', 'ndcg_cut_100', 'recip_rank', 'recall_100']}
+    evaluator = pytrec_eval.RelevanceEvaluator(qrels, {'ndcg_cut.10', 'ndcg_cut.100', 'recip_rank', 'recall_100'})  
+    run = format_run(qid, dids, inds, scores, TOPK) # formatting the results of the search for comparisons
+    results = evaluator.evaluate(run) 
+
+    # from here we just need to print out the results
+    metrics = {m: [] for m in ['ndcg_cut_10', 'ndcg_cut_100', 'recip_rank', 'recall_100']}
     for query_metrics in results.values():
         for m in metrics:
             if m in query_metrics:
@@ -133,3 +132,18 @@ for fname in eval_files:
     for m, vals in metrics.items():
         avg = np.mean(vals) if vals else 0
         print(f"{m}: {avg}")
+    print("------------------------------------------------")
+    # this code is to output our results to a file so we can run trec_eval
+    # I used trec_eval just for the MAP@10 and MAP@100 since this library doesn't
+    # support it
+    if (fname == "ms_marco/qrels.dev.tsv"):
+        output_path = "output.tsv"
+        with open(output_path, "w") as f:
+            for i, q in enumerate(qid):
+                q_str = str(int(q))
+                for rank in range(TOPK):
+                    doc_index = inds[i, rank]
+                    doc_str = str(int(dids[doc_index]))
+                    score = float(scores[i, rank])
+                    f.write(f"{q_str}\tQ0\t{doc_str}\t{rank+1}\t{score}\tEMB\n")
+########
